@@ -4,3 +4,4 @@ supabase
 pandas 
 scikit-learn 
 python-dotenv
+groq
