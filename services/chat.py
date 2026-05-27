@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-print(f"KEY LOADED: {client.api_key[:8]}...")  # prints first 8 chars safely
+print("API key loaded successfully")  # prints first 8 chars safely
 
 # ──────────────────────────────────────────────
 # System prompt – keeps the model focused on
