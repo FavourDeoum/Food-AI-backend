@@ -1,6 +1,46 @@
 from datetime import datetime
 import pandas as pd
+import hashlib
 from database import supabase
+
+def deterministic_hash(string_val: str) -> int:
+    """Returns a stable, 100% deterministic integer hash for any string."""
+    return int(hashlib.md5(string_val.encode('utf-8')).hexdigest(), 16)
+
+def get_allergy_keywords(allergy: str) -> set:
+    """Expands generic allergy names into specific ingredient keywords and handles singular/plural."""
+    alg = allergy.strip().lower()
+    if not alg or alg == "none":
+        return set()
+        
+    keywords = {alg}
+    
+    # Plural/singular expansion
+    if alg.endswith('s'):
+        keywords.add(alg[:-1])
+    else:
+        keywords.add(alg + 's')
+        
+    # Map high-level allergens to constituent ingredients
+    allergen_map = {
+        "egg": {"egg", "eggs", "omelette", "omelet"},
+        "eggs": {"egg", "eggs", "omelette", "omelet"},
+        "groundnut": {"groundnut", "groundnuts", "peanut", "peanuts"},
+        "groundnuts": {"groundnut", "groundnuts", "peanut", "peanuts"},
+        "seafood": {
+            "seafood", "fish", "shrimp", "shrimps", "crayfish", "lobster", "lobsters", 
+            "periwinkle", "periwinkles", "prawn", "prawns", "crab", "crabs", "cod", 
+            "salmon", "tuna", "mackerel", "sardine", "sardines", "oyster", "oysters", 
+            "clam", "clams", "mussel", "mussels", "squid", "octopus", "pescatarian"
+        },
+        "dairy": {"dairy", "milk", "butter", "cheese", "cream", "yogurt", "curd", "whey", "casein", "ghee"},
+        "gluten": {"gluten", "wheat", "flour", "semolina", "spaghetti", "barley", "rye", "pasta", "macaroni", "noodle", "noodles", "bread", "dough"}
+    }
+    
+    if alg in allergen_map:
+        keywords.update(allergen_map[alg])
+        
+    return keywords
 
 def get_current_meal_type():
     hour = datetime.now().hour
@@ -13,22 +53,45 @@ async def get_personalized_recommendations(user_id: str, mode: str):
     # 1. FETCH DATA IN PARALLEL (Conceptual)
     dishes_resp = supabase.table("dishes").select("*").execute()
     sentiments_resp = supabase.table("dish_sentiments").select("*").eq("user_id", user_id).execute()
-    profile_resp = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+    
+    # Handle missing profile gracefully
+    try:
+        profile_resp = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+        profile = profile_resp.data
+    except Exception:
+        # User profile doesn't exist yet, use None
+        profile = None
+    
     search_resp = supabase.table("search_logs").select("query").eq("user_id", user_id).limit(5).execute()
 
     df_dishes = pd.DataFrame(dishes_resp.data)
     sentiments = {s['dish_id']: s['sentiment'] for s in sentiments_resp.data}
-    profile = profile_resp.data
     search_queries = [s['query'].lower() for s in search_resp.data]
     current_meal = get_current_meal_type()
 
     def normalize_list(value):
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return []
-        if isinstance(value, str):
-            return [value]
         if isinstance(value, (list, tuple, set)):
             return list(value)
+        if isinstance(value, str):
+            value_str = value.strip()
+            # Handle JSON array representation
+            if value_str.startswith('[') and value_str.endswith(']'):
+                import json
+                try:
+                    parsed = json.loads(value_str)
+                    if isinstance(parsed, list):
+                        result = []
+                        for item in parsed:
+                            result.extend(normalize_list(item))
+                        return result
+                except Exception:
+                    pass
+            # Handle comma-separated lists
+            if ',' in value_str:
+                return [item.strip() for item in value_str.split(',') if item.strip()]
+            return [value_str]
         return [value]
 
     def normalize_text(value):
@@ -46,13 +109,21 @@ async def get_personalized_recommendations(user_id: str, mode: str):
     health_conditions = set()
     if profile:
         if profile.get('food_allergies'):
-            allergies = {normalize_text(item) for item in normalize_list(profile['food_allergies'])}
+            raw_allergies = normalize_list(profile['food_allergies'])
+            for raw_alg in raw_allergies:
+                allergies.update(get_allergy_keywords(raw_alg))
         if profile.get('health_conditions'):
             health_conditions = {normalize_text(item) for item in normalize_list(profile['health_conditions'])}
 
     def has_allergy(ingredients):
+        if not allergies:
+            return False
         items = [normalize_text(i) for i in normalize_list(ingredients)]
-        return any(allergy in item for allergy in allergies for item in items)
+        for item in items:
+            for kw in allergies:
+                if kw in item:
+                    return True
+        return False
 
     def is_health_compatible(row):
         suitable_for_values = normalize_list(row.get('suitable_for'))
@@ -90,8 +161,10 @@ async def get_personalized_recommendations(user_id: str, mode: str):
         elif sentiment == 'unlike':
             score -= 10000
 
+        # Meal type match gets a huge boost (+5000) so it's strictly prioritized over other attributes,
+        # but allows rotation among relevant items.
         if any(current_meal.lower() in mt for mt in meal_type):
-            score += 250
+            score += 5000
 
         if is_safe_for_everyone(suitable_for):
             score += 200
@@ -106,8 +179,10 @@ async def get_personalized_recommendations(user_id: str, mode: str):
                 else:
                     score -= 300
 
-        day_seed = int(datetime.now().strftime("%Y%m%d"))
-        rotation_offset = (abs(hash(f"{dish_id}-{day_seed}")) % 100) - 50
+        # Strong deterministic daily rotation offset unique to this user, dish, and day.
+        day_str = datetime.now().strftime("%Y%m%d")
+        seed_string = f"{user_id}-{dish_id}-{day_str}"
+        rotation_offset = deterministic_hash(seed_string) % 1000  # range 0 to 999
         score += rotation_offset
 
         if search_match:
@@ -122,4 +197,4 @@ async def get_personalized_recommendations(user_id: str, mode: str):
         if len(ranked_dishes) >= 4:
             ranked_dishes = ranked_dishes.head(4)
 
-    return ranked_dishes.drop(columns=['score']).to_dict(orient="records")
+    return ranked_dishes.drop(columns=['score']).to_dict(orient="records")
