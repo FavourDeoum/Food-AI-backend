@@ -6,3 +6,7 @@ scikit-learn
 python-dotenv
 groq
 python-multipart
+scikit-learn
+joblib
+pandas
+numpy
