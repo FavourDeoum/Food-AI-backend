@@ -107,6 +107,8 @@ async def get_personalized_recommendations(user_id: str, mode: str):
 
     allergies = set()
     health_conditions = set()
+    bmi = None
+    bmi_category = None
     if profile:
         if profile.get('food_allergies'):
             raw_allergies = normalize_list(profile['food_allergies'])
@@ -114,6 +116,22 @@ async def get_personalized_recommendations(user_id: str, mode: str):
                 allergies.update(get_allergy_keywords(raw_alg))
         if profile.get('health_conditions'):
             health_conditions = {normalize_text(item) for item in normalize_list(profile['health_conditions'])}
+        # Compute BMI if weight and height are present
+        try:
+            w = float(profile.get('weight') or 0)
+            h = float(profile.get('height') or 0)
+            if w > 0 and h > 0:
+                bmi = w / ((h / 100) ** 2)
+                if bmi < 18.5:
+                    bmi_category = "underweight"
+                elif bmi < 25:
+                    bmi_category = "normal"
+                elif bmi < 30:
+                    bmi_category = "overweight"
+                else:
+                    bmi_category = "obese"
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
 
     def has_allergy(ingredients):
         if not allergies:
@@ -178,6 +196,36 @@ async def get_personalized_recommendations(user_id: str, mode: str):
                     score += 300
                 else:
                     score -= 300
+
+            # BMI-based scoring
+            if bmi_category:
+                diet_labels = [normalize_text(item) for item in normalize_list(row.get('dietary_labels'))]
+                suitable = normalize_text(" ".join([normalize_text(i) for i in normalize_list(row.get('suitable_for'))]))
+                dish_name_lower = normalize_text(row.get('name'))
+                dish_desc_lower = normalize_text(row.get('short_description', ''))
+                combined_text = dish_name_lower + " " + dish_desc_lower + " " + suitable + " " + " ".join(diet_labels)
+
+                if bmi_category == "underweight":
+                    # Boost high-calorie, protein-rich, and nutrient-dense dishes
+                    if contains_any(combined_text, ["protein", "high protein", "high-protein", "high calorie", "calorie dense", "energy", "beef", "chicken", "pork", "egg"]):
+                        score += 400
+                    if contains_any(combined_text, ["weight gain", "high energy", "bulking"]):
+                        score += 350
+
+                elif bmi_category in ("overweight", "obese"):
+                    # Boost low-calorie, light, vegetable-rich dishes
+                    if contains_any(combined_text, ["low calorie", "low-calorie", "light", "salad", "vegetable", "steamed", "grilled", "fiber", "high fiber", "low carb", "low-carb"]):
+                        score += 400
+                    if contains_any(combined_text, ["weight loss", "low fat", "low-fat"]):
+                        score += 350
+                    # Penalize fried and very rich dishes
+                    if contains_any(combined_text, ["fried", "deep fried", "deep-fried", "fatty", "heavy"]):
+                        score -= 300
+
+                elif bmi_category == "normal":
+                    # Slight boost for balanced/healthy dishes
+                    if contains_any(combined_text, ["balanced", "healthy", "nutritious", "wholesome"]):
+                        score += 150
 
         # Strong deterministic daily rotation offset unique to this user, dish, and day.
         day_str = datetime.now().strftime("%Y%m%d")

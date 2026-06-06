@@ -3,49 +3,21 @@
     "age",
     "gender_num",
     "bmi",
+    "has_high_bp",
     "has_diabetes",
-    "has_hypertension",
-    "has_obesity",
+    "has_ulcer",
+    "has_yeast",
+    "has_allergies",
+    "weight_loss",
+    "weight_gain",
     "is_healthy",
-    "high_glucose",
-    "high_bp",
-    "activity_score",
-    "is_sedentary",
-    "is_active",
-    "health_risk",
-    "severity_num",
-    "weekly_exercise"
+    "activity_score"
   ],
   "classes": [
     "Balanced",
     "Low_Carb",
     "Low_Sodium"
   ],
-  "health_condition_map": {
-    "None": 0,
-    "Ulcer": 1,
-    "Weight Loss": 2,
-    "Weight Gain": 3,
-    "Allergies": 4,
-    "BP": 5,
-    "Hypertension": 5,
-    "Diabetes": 6
-  },
-  "activity_map": {
-    "Low activity": 0,
-    "Moderate activity": 1,
-    "High activity": 2
-  },
-  "gender_map": {
-    "Male": 0,
-    "Female": 1
-  },
-  "severity_map": {
-    "Mild": 0,
-    "Moderate": 1,
-    "Severe": 2
-  },
-  "version": "1.0",
-  "train_samples": 800,
-  "test_accuracy": 0.425
+  "version": "2.0-production",
+  "test_precision_macro": 0.5346332218506132
 }

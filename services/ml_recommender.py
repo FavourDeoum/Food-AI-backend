@@ -176,76 +176,63 @@ def _load_metadata() -> dict:
 # ── Feature extraction ────────────────────────────────────────────────────────
 def _profile_to_feature_vector(profile: dict) -> list[float]:
     """
-    Convert a Supabase ``profiles`` row into the 15-element feature vector
-    expected by the trained model.
-
-    Parameters accepted from ``profile`` dict
-    ------------------------------------------
-    age               : int
-    gender            : "Male" | "Female"
-    health_conditions : list[str]   e.g. ["Diabetes", "Weight Gain"]
-    activity_level    : "Low activity" | "Moderate activity" | "High activity"
+    Convert a Supabase ``profiles`` row into the 12-element feature vector
+    expected by the newly trained model (matches train_model.py).
     """
-    # --- health conditions ------------------------------------------------
+    # Age & Gender normalization
+    age = float(profile.get('age') or 30)
+    gender_str = str(profile.get('gender') or 'Male').lower()
+    gender_num = 1 if gender_str == 'female' else (2 if gender_str == 'other' else 0)
+    
+    # Dynamic BMI Calculation from new metric fields
+    try:
+        weight = float(profile.get("weight") or 70.0)
+        height = float(profile.get("height") or 170.0)
+        height_m = height / 100.0
+        if height_m > 0:
+            bmi = weight / (height_m ** 2)
+        else:
+            bmi = 22.0
+    except (ValueError, TypeError):
+        bmi = 22.0
+
+    # Extract health conditions
     raw_conds = profile.get("health_conditions") or ["None"]
     if isinstance(raw_conds, str):
         try:
             raw_conds = json.loads(raw_conds)
-        except json.JSONDecodeError:
+        except Exception:
             raw_conds = [raw_conds]
-
     conds_lower = [c.strip().lower() for c in raw_conds if c]
+    condition = " ".join(conds_lower)
+    
+    # 1-Hot encoding user health and diet goals
+    has_high_bp = 1 if any(x in condition for x in ['bp', 'hypertension', 'blood pressure']) else 0
+    has_diabetes = 1 if any(x in condition for x in ['diabetes', 'diabetic', 'high sugar']) else 0
+    has_ulcer = 1 if 'ulcer' in condition else 0
+    has_yeast = 1 if 'yeast' in condition else 0
+    has_allergies = 1 if any(x in condition for x in ['allergies', 'allergy']) else 0
+    weight_loss = 1 if 'weight loss' in condition else 0
+    weight_gain = 1 if 'weight gain' in condition else 0
+    is_healthy = 1 if any(x in condition for x in ['none', 'healthy', 'normal']) else 0
 
-    # Primary (highest-risk) condition
-    health_risk = max(
-        (HEALTH_CONDITION_MAP.get(c, 0) for c in conds_lower),
-        default=0,
-    )
+    # Automatically flag weight gain (obesity proxy) for the model if BMI >= 30
+    if bmi >= 30.0:
+        weight_gain = 1
 
-    has_diabetes      = int(any(c in ("diabetes", "high sugar") for c in conds_lower))
-    has_hypertension  = int(any(c in ("hypertension", "bp", "blood pressure") for c in conds_lower))
-    has_obesity       = int(any(c in ("weight gain", "obesity") for c in conds_lower))
-    is_healthy        = int(all(c in ("none", "") for c in conds_lower))
-
-    high_glucose = int(has_diabetes)
-    high_bp      = int(has_hypertension)
-
-    # --- activity ---------------------------------------------------------
-    activity_level = (profile.get("activity_level") or "Moderate activity").strip()
-    activity_score = ACTIVITY_MAP.get(activity_level.lower(), 1)
-    is_sedentary   = int(activity_level.lower() == "low activity")
-    is_active      = int(activity_level.lower() == "high activity")
-
-    # --- demographics -----------------------------------------------------
-    age        = float(profile.get("age") or 30)
-    gender_num = GENDER_MAP.get((profile.get("gender") or "Male").strip().lower(), 0)
-
-    # BMI proxy (we don't collect height/weight — use condition heuristics)
-    if has_obesity:
-        bmi = 33.0
-    elif "weight loss" in conds_lower:
-        bmi = 27.0
-    elif is_healthy:
-        bmi = 22.0
+    # Activity mapping
+    activity_str = str(profile.get('activity_level') or 'Moderate activity').lower()
+    if 'low' in activity_str:
+        activity_score = 0
+    elif 'high' in activity_str:
+        activity_score = 2
     else:
-        bmi = 25.0
-
-    # Severity proxy (number of active conditions)
-    n_active = len([c for c in conds_lower if c not in ("none", "")])
-    severity = min(n_active, 2)  # 0, 1, 2 → Mild, Moderate, Severe
-
-    # Weekly exercise proxy
-    _exercise_map = {0: 1.5, 1: 3.5, 2: 7.0}
-    weekly_exercise = _exercise_map.get(activity_score, 3.5)
-
+        activity_score = 1
+        
     return [
-        age, gender_num, bmi,
-        has_diabetes, has_hypertension, has_obesity, is_healthy,
-        high_glucose, high_bp,
-        activity_score, is_sedentary, is_active,
-        health_risk, severity, weekly_exercise,
+        float(age), float(gender_num), float(bmi), float(has_high_bp), float(has_diabetes), float(has_ulcer), 
+        float(has_yeast), float(has_allergies), float(weight_loss), float(weight_gain), float(is_healthy), float(activity_score)
     ]
-
 
 # ── Recommendation reason strings ─────────────────────────────────────────────
 def _build_reason(diet_label: str, profile: dict) -> str:
