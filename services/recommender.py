@@ -69,6 +69,18 @@ async def get_personalized_recommendations(user_id: str, mode: str):
     search_queries = [s['query'].lower() for s in search_resp.data]
     current_meal = get_current_meal_type()
 
+    # ── Auto-sync profile meal_category to the current time of day ────────────
+    # If the stored meal_category differs from what the clock says, update it
+    # silently in the background so the profile always stays current.
+    if profile and profile.get('meal_category', '').lower() != current_meal.lower():
+        try:
+            supabase.table("profiles").update(
+                {"meal_category": current_meal}
+            ).eq("id", user_id).execute()
+            profile['meal_category'] = current_meal   # keep local copy in sync too
+        except Exception:
+            pass  # non-critical — don't crash recommendations over a sync failure
+
     def normalize_list(value):
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return []
@@ -96,6 +108,7 @@ async def get_personalized_recommendations(user_id: str, mode: str):
 
     def normalize_text(value):
         return str(value).lower() if value is not None else ""
+
 
     def contains_any(text, values):
         return any(val in text for val in values if val)
@@ -179,8 +192,9 @@ async def get_personalized_recommendations(user_id: str, mode: str):
         elif sentiment == 'unlike':
             score -= 10000
 
-        # Meal type match gets a huge boost (+5000) so it's strictly prioritized over other attributes,
-        # but allows rotation among relevant items.
+        # ── Meal-time scoring (clock-driven only) ─────────────────────────────
+        # The current time of day is the single source of truth.
+        # Breakfast (6–12), Lunch (12–16), Dinner (16–21), Snack (otherwise).
         if any(current_meal.lower() in mt for mt in meal_type):
             score += 5000
 
